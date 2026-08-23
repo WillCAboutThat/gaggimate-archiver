@@ -18,7 +18,7 @@ from pathlib import Path
 
 from .config import Config
 from .device import DeviceClient
-from .manifest import Manifest, ShotRecord
+from .manifest import Manifest, ShotRecord, shot_key
 from .notify import notify
 from .vendor.gaggimate_mcp.parsers.index import IndexData, IndexEntry, parse_binary_index
 from .vendor.gaggimate_mcp.parsers.shot import parse_binary_shot
@@ -53,8 +53,14 @@ def _write_verified(path: Path, data: bytes, expect_sha: str) -> None:
         raise IOError(f"read-back hash mismatch for {path} - archive filesystem unreliable")
 
 
-def fetch_and_parse_index(client: DeviceClient) -> IndexData:
+def fetch_and_parse_index(client: DeviceClient) -> IndexData | None:
+    """None = empty device (no index exists yet - fresh filesystem, zero
+    shots). Distinct from a fetch/parse error, which raises."""
     raw = client.fetch_index()
+    if raw is None:
+        log.info("device has no shot index (fresh filesystem, zero shots) - "
+                 "treating as empty device")
+        return None
     index = parse_binary_index(raw)
     log.info(
         "index: version=%d entries=%d next_id=%d bytes=%d",
@@ -63,7 +69,38 @@ def fetch_and_parse_index(client: DeviceClient) -> IndexData:
     return index
 
 
-def plan(cfg: Config, index: IndexData, manifest: Manifest) -> tuple[list[IndexEntry], list[IndexEntry]]:
+def detect_epoch(index: IndexData, manifest: Manifest, dry_run: bool = False) -> int:
+    """The device's shot counter restarts when its filesystem is recreated
+    (firmware migration, factory reset). Without this guard, a reborn id
+    matching an archived one would be skipped as 'already archived' - silent
+    data loss months after the reset. Detection: next_id fell below the
+    watermark from the previous sync (or, bootstrapping the watermark, below
+    an id we already archived). On reset the epoch increments and new records
+    take epoch-qualified manifest keys (manifest.shot_key). Returns the
+    current epoch; persists watermark + epoch (unless dry_run)."""
+    epoch = int(manifest.device.get("epoch", 1))
+    watermark = manifest.device.get("last_seen_next_id")
+    if watermark is None:
+        max_id = max((r.id for r in manifest.shots.values()), default=0)
+        reset = index.header.next_id <= max_id
+    else:
+        reset = index.header.next_id < int(watermark)
+    if reset:
+        epoch += 1
+        msg = (f"device shot counter RESET (next_id={index.header.next_id}, "
+               f"previously {watermark or 'above ' + str(max_id)}) - starting "
+               f"epoch {epoch}; archived ids stay distinct")
+        log.warning("EPOCH: %s", msg)
+        notify(f"archiver: {msg}")
+    if not dry_run:
+        manifest.device["epoch"] = epoch
+        manifest.device["last_seen_next_id"] = index.header.next_id
+        # caller saves; watermark loss just re-runs detection next cycle
+    return epoch
+
+
+def plan(cfg: Config, index: IndexData, manifest: Manifest,
+         epoch: int = 1) -> tuple[list[IndexEntry], list[IndexEntry]]:
     """Split index entries into (to_archive, tombstoned). A verified shot
     whose parse flagged a degenerate capture (parse_ok False - the mid-write
     race) is re-fetched while inside the recheck window: the device usually
@@ -77,7 +114,7 @@ def plan(cfg: Config, index: IndexData, manifest: Manifest) -> tuple[list[IndexE
         if entry.deleted:
             tombstoned.append(entry)
             continue
-        rec = manifest.shots.get(padded)
+        rec = manifest.shots.get(shot_key(epoch, padded))
         if rec and rec.verified_at:
             heal = (rec.parse_ok is False
                     and not rec.accepted_degenerate
@@ -114,6 +151,7 @@ def _store_notes(cfg: Config, rec: ShotRecord, notes_doc: dict) -> bool:
 
 
 def reconcile_archived(cfg: Config, index: IndexData, manifest: Manifest,
+                       epoch: int = 1,
                        dry_run: bool = False) -> tuple[int, dict[str, ShotRecord]]:
     """Late metadata catch-up (the phone-notes window): notes are typically
     added AFTER a shot was archived, and ratings can change any time. For
@@ -130,7 +168,7 @@ def reconcile_archived(cfg: Config, index: IndexData, manifest: Manifest,
     for entry in index.entries:
         if entry.deleted:
             continue
-        rec = manifest.shots.get(DeviceClient.padded(entry.id))
+        rec = manifest.shots.get(shot_key(epoch, DeviceClient.padded(entry.id)))
         if not rec or not rec.verified_at:
             continue
         if entry.rating != rec.rating:
@@ -189,6 +227,19 @@ def run(cfg: Config, dry_run: bool = False, limit: int | None = None) -> dict:
     try:
         index = fetch_and_parse_index(client)
 
+        # Empty device (no index yet): a clean no-op cycle, not an error.
+        # Happens on every fresh-filesystem device until its first shot
+        # (new users; post-migration flashes). Nothing to fetch, nothing to
+        # reconcile; the epoch watermark is untouched (no counter to read).
+        if index is None:
+            if not dry_run:
+                cfg.last_success_path.parent.mkdir(parents=True, exist_ok=True)
+                cfg.last_success_path.write_text(_now() + "\n", encoding="utf-8")
+            log.info("sync done: empty device (no index), %d total in manifest",
+                     len(manifest.shots))
+            return {"archived": 0, "reconciled": 0, "notes_stored": 0,
+                    "notes_deferred": 0, "tombstoned": 0, "empty_device": True}
+
         # Format-drift check: index.bin's header version only moves when new
         # firmware is flashed. Detect it the moment it happens; phase 2 must
         # refuse to delete until a clean verified cycle on the new format.
@@ -205,14 +256,18 @@ def run(cfg: Config, dry_run: bool = False, limit: int | None = None) -> dict:
             manifest.device["index_version"] = index.header.version
             manifest.save(cfg.manifest_path)
 
-        to_archive, tombstoned = plan(cfg, index, manifest)
+        epoch = detect_epoch(index, manifest, dry_run=dry_run)
+        if not dry_run:
+            manifest.save(cfg.manifest_path)
+
+        to_archive, tombstoned = plan(cfg, index, manifest, epoch)
 
         # Record tombstones (never fetched; a tombstone for a shot we never
         # archived is data the firmware or its cleanup reaper already took).
         tombstone_dirty = False
         for entry in tombstoned:
             padded = DeviceClient.padded(entry.id)
-            rec = manifest.shots.get(padded)
+            rec = manifest.shots.get(shot_key(epoch, padded))
             if rec:
                 if not rec.tombstone_seen:
                     rec.tombstone_seen = True
@@ -233,7 +288,8 @@ def run(cfg: Config, dry_run: bool = False, limit: int | None = None) -> dict:
                     entry.profile_name,
                     entry.has_notes,
                 )
-            would_reconcile, would_notes = reconcile_archived(cfg, index, manifest, dry_run=True)
+            would_reconcile, would_notes = reconcile_archived(cfg, index, manifest,
+                                                              epoch, dry_run=True)
             log.info(
                 "dry-run: %d to archive, %d rating updates, %d notes fetches, "
                 "%d already archived, %d tombstoned",
@@ -253,8 +309,9 @@ def run(cfg: Config, dry_run: bool = False, limit: int | None = None) -> dict:
         new_shot_notes: dict[str, ShotRecord] = {}
         for entry in oldest_first:
             padded = DeviceClient.padded(entry.id)
+            key = shot_key(epoch, padded)
             shot_dir = _shot_dir(cfg, entry)
-            prev = manifest.shots.get(padded)  # provisional or heal re-fetch
+            prev = manifest.shots.get(key)  # provisional or heal re-fetch
 
             slog = client.fetch_slog(entry.id)
             slog_sha = _sha256(slog)
@@ -265,7 +322,7 @@ def run(cfg: Config, dry_run: bool = False, limit: int | None = None) -> dict:
             # per-shot samples file (parse only writes missing ones, so a
             # healed slog would otherwise keep its stale 0-row parquet).
             if prev is not None and prev.slog_sha256 != slog_sha:
-                stale = cfg.parquet_dir / "samples" / f"{padded}.parquet"
+                stale = cfg.parquet_dir / "samples" / f"{key}.parquet"
                 stale.unlink(missing_ok=True)
 
             # Mid-write race guard: a shot's index entry appears while its
@@ -312,15 +369,16 @@ def run(cfg: Config, dry_run: bool = False, limit: int | None = None) -> dict:
                 archived_at=now,
                 verified_at=now if complete else "",
                 accepted_degenerate=accepted,
+                epoch=epoch,
             )
-            manifest.shots[padded] = rec
+            manifest.shots[key] = rec
             manifest.save(cfg.manifest_path)
             archived += 1
             if entry.has_notes:
                 new_shot_notes[padded] = rec
             log.info("archived %s (%d bytes)", padded, len(slog))
 
-        reconciled, needs_notes = reconcile_archived(cfg, index, manifest)
+        reconciled, needs_notes = reconcile_archived(cfg, index, manifest, epoch)
         needs_notes.update(new_shot_notes)
         notes_stored, notes_deferred = _fetch_and_store_notes(cfg, manifest, needs_notes)
 

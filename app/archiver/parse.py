@@ -69,16 +69,19 @@ def run(cfg: Config, rebuild: bool = False) -> int:
     shot_rows: list[dict] = []
     manifest_dirty = False
 
-    for padded, rec in sorted(manifest.shots.items()):
+    # Iteration is by manifest KEY (== padded id for epoch 1; epoch-prefixed
+    # for later device-counter lives). Sample files are named by key so a
+    # reborn shot id can never overwrite an archived shot's samples.
+    for key, rec in sorted(manifest.shots.items()):
         if not rec.slog_path:
             continue
-        sample_path = samples_dir / f"{padded}.parquet"
+        sample_path = samples_dir / f"{key}.parquet"
         need_samples = rebuild or not sample_path.exists()
 
         try:
             shot = _parse_slog(cfg, rec)
         except (ValueError, OSError) as e:
-            log.error("%s: parse FAILED: %s", padded, e)
+            log.error("%s: parse FAILED: %s", key, e)
             if rec.parse_ok is not False:
                 rec.parse_ok = False
                 manifest_dirty = True
@@ -86,7 +89,8 @@ def run(cfg: Config, rebuild: bool = False) -> int:
             # manifest facts, so a corrupt shot is a queryable record with
             # parse_ok=false - never a ghost the MCP cannot see.
             shot_rows.append({
-                "shot_id": rec.id, "padded_id": padded,
+                "shot_id": rec.id, "padded_id": rec.padded_id,
+                "device_epoch": rec.epoch,
                 "timestamp": rec.timestamp,
                 "profile_id": rec.profile_id, "profile_name": rec.profile_name,
                 "duration": rec.duration, "sample_interval_ms": None,
@@ -101,7 +105,7 @@ def run(cfg: Config, rebuild: bool = False) -> int:
         # DRIFT pause (the drift proved out in practice) - phase 2 resumes.
         if (manifest.device.get("format_changed_at")
                 and shot.version == max(manifest.device.get("slog_versions") or [shot.version])):
-            log.warning("FORMAT DRIFT resolved: shot %s parsed clean under the new format", padded)
+            log.warning("FORMAT DRIFT resolved: shot %s parsed clean under the new format", key)
             manifest.device.pop("format_changed_at", None)
             manifest_dirty = True
 
@@ -113,7 +117,7 @@ def run(cfg: Config, rebuild: bool = False) -> int:
             seen.sort()
             manifest_dirty = True
             if len(seen) > 1:
-                msg = f"new .slog format version {shot.version} first seen on shot {padded} (known: {seen})"
+                msg = f"new .slog format version {shot.version} first seen on shot {key} (known: {seen})"
                 log.error("FORMAT DRIFT: %s", msg)
                 notify(msg)
 
@@ -127,7 +131,7 @@ def run(cfg: Config, rebuild: bool = False) -> int:
         # download). parse_ok=False makes sync re-fetch it (plan()'s heal).
         ok = shot.sample_count > 0
         if not ok:
-            log.warning("%s: degenerate capture (0 samples) - flagged for re-fetch", padded)
+            log.warning("%s: degenerate capture (0 samples) - flagged for re-fetch", key)
         if rec.parse_ok is not ok or rec.sample_count != shot.sample_count:
             rec.parse_ok = ok
             rec.sample_count = shot.sample_count
@@ -136,7 +140,8 @@ def run(cfg: Config, rebuild: bool = False) -> int:
         notes = _notes(cfg, rec)
         shot_rows.append({
             "shot_id": rec.id,
-            "padded_id": padded,
+            "padded_id": rec.padded_id,
+            "device_epoch": rec.epoch,
             "timestamp": rec.timestamp,
             "profile_id": shot.profile_id or rec.profile_id,
             "profile_name": shot.profile_name or rec.profile_name,

@@ -35,7 +35,7 @@ from pathlib import Path
 
 from .config import Config
 from .device import DeviceClient, fetch_notes_ws
-from .manifest import Manifest
+from .manifest import Manifest, shot_key
 from .notify import notify
 from .sync import _canonical_notes
 from .vendor.gaggimate_mcp.parsers.index import parse_binary_index
@@ -84,7 +84,12 @@ def run(cfg: Config, dry_run: bool = False) -> dict:
 
     client = DeviceClient(cfg.host, timeout=cfg.request_timeout, delay=cfg.request_delay)
     try:
-        index = parse_binary_index(client.fetch_index())
+        raw = client.fetch_index()
+        if raw is None:
+            log.info("phase2: device has no shot index (empty device) - nothing to delete")
+            return {"deleted": 0, "empty_device": True}
+        index = parse_binary_index(raw)
+        epoch = int(manifest.device.get("epoch", 1))
         live = [e for e in index.entries if not e.deleted]
         # Keep-recent window: the newest N stay on the device regardless.
         keep_ids = {e.id for e in sorted(live, key=lambda e: e.timestamp)[-cfg.keep_recent_shots:]}
@@ -93,7 +98,7 @@ def run(cfg: Config, dry_run: bool = False) -> dict:
         candidates = []
         for entry in sorted(live, key=lambda e: e.timestamp):  # oldest first
             padded = DeviceClient.padded(entry.id)
-            rec = manifest.shots.get(padded)
+            rec = manifest.shots.get(shot_key(epoch, padded))
             if (rec is None or not rec.verified_at or rec.parse_ok is not True
                     or rec.device_deleted_at):
                 continue
@@ -148,10 +153,16 @@ def run(cfg: Config, dry_run: bool = False) -> dict:
 
         _ws_delete(cfg.host, [str(e.id) for e, _ in verified])
 
-        # Confirm tombstones on a fresh index.
-        index2 = parse_binary_index(client.fetch_index())
-        gone = {e.id for e in index2.entries if e.deleted} | (
-            {e.id for e in index.entries} - {e.id for e in index2.entries})
+        # Confirm tombstones on a fresh index. A vanished index here is
+        # unexpected (we just read a live one) - treat as zero confirmations;
+        # unconfirmed records simply retry the evidence path next cycle.
+        raw2 = client.fetch_index()
+        if raw2 is None:
+            gone: set[int] = set()
+        else:
+            index2 = parse_binary_index(raw2)
+            gone = {e.id for e in index2.entries if e.deleted} | (
+                {e.id for e in index.entries} - {e.id for e in index2.entries})
 
         deleted = 0
         log_path = cfg.archive_dir / "deletions.log"

@@ -41,6 +41,7 @@ both later additions; nothing has ever changed meaning.
 | incomplete | file ended before its declared sample count |
 | phase_count | number of named phases |
 | parse_ok | false = corrupt/degenerate capture; curves unavailable |
+| device_epoch | which life of the device's shot counter the id belongs to (see below) |
 
 Semantics that matter: **`final_weight IS NOT NULL` ("weighed") separates
 real espresso from boiler flushes** on single-boiler machines - filter on
@@ -102,6 +103,19 @@ every answer; bean age and grind changes stop being folklore.
 - Format drift is detected structurally (index header version each sync,
   .slog version each parse), not by trusting version strings. Drift
   pauses phase 2 until a shot parses clean under the new format.
+- **A missing index is not an error.** Nightly-era firmware (LittleFS)
+  creates the shot index on the first recorded shot; until then
+  `index.bin` 404s with a literal `Index not found`. A fresh machine or a
+  just-flashed one is an EMPTY device: sync treats it as a clean no-op
+  cycle and phase 2 reports nothing-to-delete.
+- **The device's shot counter can reset** (measured 2026-08-23: the
+  SPIFFS to LittleFS migration restarted ids at 1), so a device id alone
+  is not unique across your archive's lifetime. The archiver watches
+  `next_id` against a watermark; a counter moving backwards starts a new
+  **epoch**. Archived records keep their identity: epoch 1 keys stay
+  plain, later epochs prefix manifest keys and sample filenames
+  (`e2-000233`), and `shots.parquet` carries `device_epoch` - a reborn
+  id can never collide with or silently replace an archived shot.
 
 ## Services
 

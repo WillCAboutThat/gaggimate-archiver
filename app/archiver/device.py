@@ -68,10 +68,13 @@ class DeviceClient:
     def padded(shot_id: int | str) -> str:
         return str(shot_id).zfill(6)
 
-    def fetch_index(self) -> bytes:
-        data = self._get("index.bin")
-        assert data is not None
-        return data
+    def fetch_index(self) -> bytes | None:
+        """None = the device has no index yet. Nightly-era firmware (LittleFS)
+        creates the index on the FIRST recorded shot; until then this endpoint
+        404s with a literal 'Index not found' body (measured 2026-08-23 on
+        v1.8.1-159 after the fresh-filesystem migration). A brand-new machine
+        or a just-flashed one is an EMPTY device, not a broken one."""
+        return self._get("index.bin", ok_404=True)
 
     def fetch_slog(self, shot_id: int | str) -> bytes:
         data = self._get(f"{self.padded(shot_id)}.slog")

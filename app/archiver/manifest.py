@@ -17,6 +17,17 @@ from pathlib import Path
 SCHEMA_VERSION = 1
 
 
+def shot_key(epoch: int, padded: str) -> str:
+    """Manifest key for a shot. The device's shot counter RESETS when its
+    filesystem is recreated (measured 2026-08-23: the SPIFFS->LittleFS
+    migration started the counter over), so a device id alone stops being
+    unique across the archive's lifetime. Epoch 1 keeps plain padded keys
+    (every record archived before epochs existed IS epoch 1 - zero churn);
+    later epochs prefix, so a reborn id 000233 can never collide with the
+    archived one."""
+    return padded if epoch <= 1 else f"e{epoch}-{padded}"
+
+
 @dataclass
 class ShotRecord:
     id: int
@@ -43,6 +54,9 @@ class ShotRecord:
     # mid-write WiFi drop). We faithfully hold what the device holds; the
     # retry loop ends; parse_ok stays False as the quality record.
     accepted_degenerate: bool = False
+    # Which life of the device's shot counter this id belongs to (additive,
+    # default 1 = every pre-epoch record). See shot_key().
+    epoch: int = 1
 
 
 @dataclass

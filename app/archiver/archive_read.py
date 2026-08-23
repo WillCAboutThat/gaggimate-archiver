@@ -97,9 +97,30 @@ def beans_at(cfg: Config, ts: int) -> dict | None:
     return out
 
 
+def _manifest_rec(shots: dict, padded: str) -> dict | None:
+    """Find a shot's manifest record by device padded id, preferring the
+    newest epoch. Epoch 1 keys by plain padded id; later device-counter
+    lives prefix the key (manifest.shot_key) - MCP callers only know the
+    device id, so scan for the prefixed variants."""
+    best = None
+    plain = shots.get(padded)
+    if plain:
+        best = (int(plain.get("epoch", 1)), plain)
+    suffix = "-" + padded
+    for k, v in shots.items():
+        if k.startswith("e") and k.endswith(suffix):
+            try:
+                ep = int(k[1:k.index("-")])
+            except ValueError:
+                continue
+            if best is None or ep > best[0]:
+                best = (ep, v)
+    return best[1] if best else None
+
+
 def _notes_text(cfg: Config, padded: str) -> str | None:
     manifest = json.loads((cfg.archive_dir / "manifest.json").read_text(encoding="utf-8"))
-    rec = manifest["shots"].get(padded)
+    rec = _manifest_rec(manifest["shots"], padded)
     if not rec or not rec.get("json_path"):
         return None
     try:
@@ -166,7 +187,7 @@ def _headline(cfg: Config, con, shot_id: int) -> dict:
 
 def _phase_names(cfg: Config, shot_id: int) -> dict[int, str]:
     manifest = json.loads((cfg.archive_dir / "manifest.json").read_text(encoding="utf-8"))
-    rec = manifest["shots"].get(f"{shot_id:06d}")
+    rec = _manifest_rec(manifest["shots"], f"{shot_id:06d}")
     if not rec:
         return {}
     shot = parse_binary_shot((cfg.archive_dir / rec["slog_path"]).read_bytes(), rec["padded_id"])
