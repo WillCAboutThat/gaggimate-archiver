@@ -4,12 +4,17 @@ Durable, verified, analytics-ready archiving for [GaggiMate](https://gaggimate.e
 espresso machines - plus an optional MCP server so an AI assistant can
 reason over your full shot history.
 
-**The problem** ([jniebuhr/gaggimate#571](https://github.com/jniebuhr/gaggimate/issues/571)):
-your shot history lives only on the machine's flash. Firmware updates have
-wiped it; the firmware's own free-space reaper silently rotates old shots
-out. This project makes the machine a *buffer* and your own storage the
-*home* - every shot pulled off the device on a schedule, hash-verified end
-to end, parsed into Parquet, queryable forever.
+**The problem**: your shot history lives as a single copy on the
+machine's flash - finite space, so the firmware's free-space reaper
+silently rotates your oldest shots out, and one bad day (flash wear, a
+WiFi drop mid-write, a machine mishap) is one copy lost. (Historically,
+firmware updates wiped history too -
+[#571](https://github.com/jniebuhr/gaggimate/issues/571) - now fixed
+upstream by moving the web UI to the firmware partition; the rotation
+and single-copy realities remain.) This project makes the machine a
+*buffer* and your own storage the *home* - every shot pulled off the
+device on a schedule, hash-verified end to end, parsed into Parquet,
+queryable forever.
 
 ## What it does
 
