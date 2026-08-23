@@ -105,6 +105,13 @@ phases).
 - [MyBrewFolio](https://mybrewfolio.com) - cloud shot analysis for
   GaggiMate. Choose it for zero-setup convenience; choose this if you
   want local-first ownership - your shot data never leaves your network.
+- [MATEbot](https://github.com/AlexNly/MATEbot) - archives shots/notes/
+  profiles to a git repo per shot, with a lovely Telegram notes-capture
+  flow and a static journal. Closest in spirit (local, durable). This
+  project differs in the verification protocol (hash-verified writes and
+  read-backs, delete-time re-verification), the typed Parquet/DuckDB
+  analytics layer, and the MCP. They compose fine - MATEbot's Telegram
+  flow is a great notes front-end regardless of where your archive lives.
 
 ## Roadmap
 
