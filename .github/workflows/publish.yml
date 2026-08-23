@@ -21,5 +21,5 @@ jobs:
           context: ./app
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}:${{ github.ref_name }}
-            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/willcaboutthat/gaggimate-archiver:${{ github.ref_name }}
+            ghcr.io/willcaboutthat/gaggimate-archiver:latest
