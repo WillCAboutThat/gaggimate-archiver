@@ -90,7 +90,10 @@ phases).
   when the note carries a rating > 0 - unrated text notes are invisible
   to any sync tool.
 - **Use water mode for flushes** (single-boiler machines): water mode
-  isn't recorded as a shot, so your archive stays espresso-only.
+  isn't recorded as a shot, so your archive stays espresso-only. On
+  nightly-era firmware the dedicated Flush action (hold the play button
+  on the touchscreen, or the Flush button on the web dashboard) is
+  equally clean: utility processes are never written to shot history.
 - **Sync before flashing firmware.** Updates have wiped device history;
   one sync first makes that cost zero.
 
