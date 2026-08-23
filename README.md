@@ -102,6 +102,9 @@ phases).
   over the *live device* (sees only what's currently on flash). This
   project vendors its excellent `.slog`/`index.bin` parsers (MIT, see
   `app/archiver/vendor/`) and archives what the device forgets.
+- [MyBrewFolio](https://mybrewfolio.com) - cloud shot analysis for
+  GaggiMate. Choose it for zero-setup convenience; choose this if you
+  want local-first ownership - your shot data never leaves your network.
 
 ## Roadmap
 
