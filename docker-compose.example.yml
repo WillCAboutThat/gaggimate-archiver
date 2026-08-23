@@ -1,0 +1,77 @@
+# gaggimate-archiver - example deployment.
+# Copy to docker-compose.yml, set the three CHANGE-ME values, `docker compose up -d`.
+# Full mechanism docs: ARCHITECTURE.md.
+
+services:
+  archiver:
+    image: ghcr.io/willcaboutthat/gaggimate-archiver:latest  # or build: ./app
+    container_name: gaggimate-archiver
+    restart: unless-stopped
+    environment:
+      - TZ=UTC                                   # CHANGE ME: your local timezone
+      - GAGGIMATE_HOST=gaggimate.local           # CHANGE ME: your device's IP is sturdier
+      - ARCHIVE_DIR=/archive
+      - SYNC_SCHEDULE=06:00,18:00                # local time per TZ
+      - RUN_ON_START=true
+      - LOG_LEVEL=INFO
+      # Device gentleness: sequential spaced requests; the display MCU's
+      # heap is fragile. Raise the delay if your device struggles.
+      - REQUEST_DELAY=1.0
+      # Optional: POST one-line failure/drift notifications here (ntfy etc.)
+      - NTFY_URL=
+      # Optional: the manual sync trigger (iOS Shortcut / MCP sync_now).
+      # Fail-closed: empty token = listener never starts.
+      - SYNC_TOKEN=
+      # Phase 2: verified deletion from the device. START false; enable
+      # deliberately after your archive has verified cycles behind it and
+      # you've spot-checked `parse --rebuild`. See ARCHITECTURE.md.
+      - DELETE_ENABLED=false
+      - DELETE_GRACE_DAYS=14
+      - KEEP_RECENT_SHOTS=20
+      - DELETE_MAX_PER_RUN=10
+      # Covariate defaults for the meta layer / MCP
+      - DOSE_DEFAULT_G=18.0
+    ports:
+      - "8092:8092"   # POST /sync trigger (only if SYNC_TOKEN is set)
+    volumes:
+      - /path/to/your/archive:/archive           # CHANGE ME
+      # ── Recommended if /archive lives on CIFS/NFS: the mount guard ──────
+      # Network mounts with `nofail` fail SILENTLY - a container will fill
+      # the empty local mountpoint and report success (measured: 25 GB
+      # "archived" to nowhere). Create a sentinel ON the share once:
+      #   touch /path/to/your/archive/.mounted
+      # then uncomment; the container refuses to start when the share is
+      # absent, which for an archiver is the correct tantrum.
+      # - type: bind
+      #   source: /path/to/your/archive/.mounted
+      #   target: /mnt-guard
+      #   read_only: true
+      #   bind:
+      #     create_host_path: false
+
+  # Optional: the archive MCP - AI reasoning over your full shot history.
+  # Delete this service if you don't want it.
+  mcp:
+    image: ghcr.io/willcaboutthat/gaggimate-archiver:latest
+    container_name: gaggimate-mcp
+    command: ["python", "-m", "archiver.mcp_server"]
+    restart: unless-stopped
+    environment:
+      - TZ=UTC                                   # match the archiver
+      - ARCHIVE_DIR=/archive
+      - MCP_TOKEN=                               # REQUIRED: server refuses to start empty
+      - MCP_PORT=8091
+      - SYNC_TOKEN=                              # same as archiver's, enables sync_now
+      - ARCHIVER_SYNC_URL=http://gaggimate-archiver:8092/sync
+      - DOSE_DEFAULT_G=18.0
+    ports:
+      - "8091:8091"
+    volumes:
+      # Read-only BY MOUNT: raw/parquet/manifest are structurally
+      # untouchable from this container; only meta/ (your bean/grind logs)
+      # is writable. Create /path/to/your/archive/meta once.
+      - /path/to/your/archive:/archive:ro        # CHANGE ME
+      - /path/to/your/archive/meta:/archive/meta # CHANGE ME
+# Client setup (Claude Code, any machine that can reach this host):
+#   claude mcp add -s user --transport http gaggimate-archive \
+#     http://YOUR-HOST:8091/mcp --header "Authorization: Bearer YOUR-MCP-TOKEN"
