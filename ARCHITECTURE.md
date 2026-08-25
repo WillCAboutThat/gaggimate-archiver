@@ -36,7 +36,8 @@ both later additions; nothing has ever changed meaning.
 | sample_interval_ms | sampling period (250 ms on tested firmware) |
 | sample_count | samples actually parsed |
 | slog_version | .slog format version (V5 on tested firmware) |
-| final_weight | grams, ONLY when a BLE scale was connected (else null) |
+| final_weight | grams, ONLY when a BLE scale was connected (else null). Normally the .slog header's stamp; when the header reads ~0 g but the sample stream settled substantially higher (firmware v1.8.1-159+ stops the scale timer at brew:end, which on some scales zeroes the stream while the recording tail is still written; or the operator powered the scale off in the tail), the settled sample value is used instead |
+| weight_rescued | true when final_weight came from the sample stream's settled value rather than the header (see above). Additive column, 2026-08-25 |
 | rating / notes_text / notes_json | from the device's notes doc |
 | incomplete | file ended before its declared sample count |
 | phase_count | number of named phases |

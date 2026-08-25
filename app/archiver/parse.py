@@ -49,6 +49,33 @@ def _samples_table(shot: ShotData) -> pa.Table:
     return pa.table(cols, schema=schema)
 
 
+def _settled_weight(shot: ShotData) -> float | None:
+    """The scale's settled reading from the sample stream: the last value
+    before a terminal collapse to ~zero, else simply the last value.
+
+    Why (receipt 2026-08-25, shots 312/313/314): firmware v1.8.1-159+ calls
+    the scale's stopTimer() at brew:end - on this scale that zeroes the
+    streamed weight while the recording tail is still being written, so the
+    .slog HEADER stamps ~0 g for a shot that actually landed on target (all
+    three zeroed from ~35 g at the stop moment, at ~6 bar). The same rule
+    also covers the operator powering the scale off in the tail.
+
+    Deliberately narrow: the collapse only counts when the stream ENDS at
+    ~zero after having been substantially higher. An early spike that later
+    normalizes (shot 309's 511 g ghost) or a normal ending keeps the last
+    reading - the maximum is never trusted on its own."""
+    vals = [s.get("v") for s in shot.samples if s.get("v") is not None]
+    if not vals:
+        return None
+    last = vals[-1]
+    if last > 1.0:
+        return last
+    prior = [v for v in vals if v > 1.0]
+    if prior:
+        return prior[-1]
+    return last if last > 0 else None
+
+
 def _notes(cfg: Config, rec) -> dict:
     if not rec.json_path:
         return {}
@@ -95,6 +122,7 @@ def run(cfg: Config, rebuild: bool = False) -> int:
                 "profile_id": rec.profile_id, "profile_name": rec.profile_name,
                 "duration": rec.duration, "sample_interval_ms": None,
                 "sample_count": 0, "slog_version": None, "final_weight": None,
+                "weight_rescued": False,
                 "rating": rec.rating or None, "incomplete": True,
                 "phase_count": 0, "notes_text": None, "notes_json": None,
                 "parse_ok": False,
@@ -137,6 +165,19 @@ def run(cfg: Config, rebuild: bool = False) -> int:
             rec.sample_count = shot.sample_count
             manifest_dirty = True
 
+        # Weight rescue: prefer the header's stamp, but when it reads ~zero
+        # while the sample stream settled substantially higher, the header is
+        # the stopTimer/power-off artifact - take the settled value and say so.
+        final_weight = shot.weight
+        weight_rescued = False
+        settled = _settled_weight(shot)
+        if (settled is not None and settled > 5.0
+                and (final_weight is None or final_weight < 1.0)):
+            final_weight = round(settled, 1)
+            weight_rescued = True
+            log.info("%s: final weight rescued from samples (%.1f g; header %s)",
+                     key, settled, shot.weight)
+
         notes = _notes(cfg, rec)
         shot_rows.append({
             "shot_id": rec.id,
@@ -149,7 +190,8 @@ def run(cfg: Config, rebuild: bool = False) -> int:
             "sample_interval_ms": shot.sample_interval,
             "sample_count": shot.sample_count,
             "slog_version": shot.version,
-            "final_weight": shot.weight,
+            "final_weight": final_weight,
+            "weight_rescued": weight_rescued,
             "rating": rec.rating or None,
             "incomplete": shot.incomplete,
             "phase_count": len(shot.phases),
